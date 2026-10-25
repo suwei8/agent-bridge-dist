@@ -120,16 +120,23 @@ github_api_curl() {
     )
 
     if [ -n "${GITHUB_TOKEN:-}" ]; then
+        local curl_status=0
         if curl -fsSL --retry 3 --connect-timeout 10 \
             "${common_args[@]}" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "$@"; then
             return 0
+        else
+            curl_status=$?
         fi
 
-        # This distribution repository is public. A stale or revoked token
-        # must not prevent anonymous access to public Releases and raw files.
-        warn "带 GITHUB_TOKEN 的 GitHub 请求失败，正在重试匿名访问公开资源..."
+        # curl exit code 22 means an HTTP error response. For this public
+        # distribution repository, retry anonymously in case the token is
+        # stale, revoked, or lacks access. Do not retry transport failures.
+        if [ "$curl_status" -ne 22 ]; then
+            return "$curl_status"
+        fi
+        warn "带 GITHUB_TOKEN 的 GitHub 请求收到 HTTP 错误，正在重试匿名访问公开资源..."
     fi
 
     curl -fsSL --retry 3 --connect-timeout 10 \
