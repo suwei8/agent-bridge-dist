@@ -124,7 +124,7 @@ fi
 
 ## 5. GitHub Token 是否必需？
 
-通常不需要。该分发仓库和 Releases 是公开的，脚本可以匿名查询公开 Release 并下载资产。只有在 GitHub API 匿名请求被限流等情况下，才考虑提供有适当读取权限的 `GITHUB_TOKEN`。
+通常不需要。该分发仓库和 Releases 是公开的，脚本可以匿名查询公开 Release 并下载资产。只有在 GitHub API 匿名请求被限流等情况下，才考虑提供有适当读取权限的 `GITHUB_TOKEN`。最新版 `manage.sh` 遇到带 Token 的 HTTP 错误时，会尝试匿名访问公开资源；旧版脚本如果因失效 Token 报 HTTP 401，可先备份并移走 `.agentbridge-github.env`，再更新管理脚本。
 
 不要把 Token 写入公开文件、命令截图或提交到仓库。若使用 Token，请优先通过当前 shell 的环境变量传入，并在使用后按需取消：
 
