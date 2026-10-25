@@ -49,15 +49,15 @@ LATEST_RELEASE_JSON=""
 EXCLUDED_PIDS=""
 
 info() {
-    echo -e "${GREEN}[INFO] $1${NC}"
+    echo -e "${GREEN}[INFO] $1${NC}" >&2
 }
 
 warn() {
-    echo -e "${YELLOW}[WARN] $1${NC}"
+    echo -e "${YELLOW}[WARN] $1${NC}" >&2
 }
 
 error() {
-    echo -e "${RED}[ERROR] $1${NC}"
+    echo -e "${RED}[ERROR] $1${NC}" >&2
 }
 
 append_result_note() {
@@ -114,16 +114,26 @@ resolve_github_token() {
 github_api_curl() {
     local accept_header="$1"
     shift
-    local auth_args=()
+    local common_args=(
+        -H "Accept: ${accept_header}"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+    )
 
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-        auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+        if curl -fsSL --retry 3 --connect-timeout 10 \
+            "${common_args[@]}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$@"; then
+            return 0
+        fi
+
+        # This distribution repository is public. A stale or revoked token
+        # must not prevent anonymous access to public Releases and raw files.
+        warn "带 GITHUB_TOKEN 的 GitHub 请求失败，正在重试匿名访问公开资源..."
     fi
 
     curl -fsSL --retry 3 --connect-timeout 10 \
-        -H "Accept: ${accept_header}" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "${auth_args[@]}" \
+        "${common_args[@]}" \
         "$@"
 }
 
@@ -356,7 +366,7 @@ download_latest_binary() {
         return 1
     fi
 
-    info "正在从私有 GitHub Releases 下载二进制..."
+    info "正在从 GitHub Releases 下载二进制..."
     if ! download_release_asset "$APP_NAME" "$tmp_file"; then
         error "Latest Release 中未找到 $APP_NAME"
         return 1
