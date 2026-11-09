@@ -6,6 +6,10 @@ AgentBridge 的 Linux 二进制分发仓库。新服务器无需克隆源码仓�
 - 最新 Release：<https://github.com/suwei8/agent-bridge-dist/releases/latest>
 - 管理脚本原始下载地址：<https://raw.githubusercontent.com/suwei8/agent-bridge-dist/main/manage.sh>
 
+> **仓库职责划分**：本仓库**不存放项目源码**，只放 `manage.sh`、本说明文件和 GitHub Releases 中的预编译二进制。
+> 源码在私有仓库 [`suwei8/agent-bridge`](https://github.com/suwei8/agent-bridge)；二进制由本仓库的
+> GitHub Actions（`.github/workflows/release.yml`）从该私有仓库的 tag 拉取源码后构建并发布，见文末「9. 构建与发布」。
+
 ## 1. 系统要求
 
 - Ubuntu / Debian Linux（脚本使用 `apt-get` 和 `dpkg` 安装、检查依赖）。
@@ -180,3 +184,28 @@ cat .env
 ## 8. 重启后自动启动
 
 `manage.sh start` 会在后台启动程序，但当前脚本本身**不会创建 systemd 服务，也不会自动配置开机启动**。如果需要开机自动启动，请另外配置并测试 systemd 服务；不要假设仅执行一次 `start` 就能在服务器重启后自动恢复。
+
+## 9. 构建与发布
+
+二进制构建和 GitHub Release 都在本仓库完成（本仓库是公开仓，Actions 配额免费；私有源码仓库不再跑构建）。
+
+- 工作流：`.github/workflows/release.yml`（`Build and publish release`，手动触发）。
+- 输入：源码 tag（如 `v0.2.119`）；可选追加说明文字、是否标记预发布。
+- 构建环境：`ubuntu:20.04` 容器 + Python 3.8 + PyInstaller，glibc 2.31 基线；ARM64 在原生 arm64 runner 上构建，AMD64 在 x86_64 runner 上构建。
+- 资产名：`agent-bridge`（ARM64）/ `agent-bridge.sha256`、`agent-bridge-linux-amd64` / `agent-bridge-linux-amd64.sha256`，与 `manage.sh` 的下载逻辑一一对应。
+- 发行说明：自动取私有仓库同 tag 下的 `docs/RELEASE_V<版本>.md`（如 `docs/RELEASE_V0.2.119.md`），找不到时只发布资产并给出提示。
+
+发布步骤：
+
+1. 在私有源码仓库完成改动，更新 `CHANGELOG.md`、写 `docs/RELEASE_V<版本>.md`、把 `.agentbridge-release-tag` 改成新版本；
+2. 打 tag 并推送：`git tag v0.2.119 && git push origin main refs/tags/v0.2.119`；
+3. 在本仓库 Actions 里运行 `Build and publish release`，填入同一个 tag；
+4. 构建完成后核对 Release 的四个资产与 SHA-256，再把实际大小/校验值回填到源码仓库的发行说明里。
+
+工作流依赖一个仓库 Secret：
+
+| Secret | 用途 |
+| --- | --- |
+| `SRC_REPO_TOKEN` | 只读拉取私有仓库 `suwei8/agent-bridge` 的源码（fine-grained PAT，仅需该仓库 `Contents: Read`） |
+
+轮换方式：GitHub → 本仓库 Settings → Secrets and variables → Actions → 更新 `SRC_REPO_TOKEN`；或用 `gh secret set SRC_REPO_TOKEN --repo suwei8/agent-bridge-dist`。
