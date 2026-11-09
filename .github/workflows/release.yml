@@ -1,0 +1,169 @@
+# 从私有源码仓库构建 AgentBridge 二进制，并把 release 发布到本仓库。
+#
+# 本仓库只存放产物：manage.sh、README、以及 GitHub Releases 中的二进制。
+# 项目源码仍在私有仓库 suwei8/agent-bridge，构建时通过 SRC_REPO_TOKEN 只读拉取。
+#
+# 用法：
+#   1. 在源码仓库打 tag 并推送（例如 v0.2.119），写好 docs/RELEASE_V0.2.119.md；
+#   2. 打开本仓库 Actions → "Build and publish release" → Run workflow，填入该 tag。
+name: Build and publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '源码 tag（例如 v0.2.119）'
+        required: true
+      notes_extra:
+        description: '追加到发行说明末尾的文字（可选）'
+        required: false
+        default: ''
+      prerelease:
+        description: '标记为预发布'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  SRC_REPO: suwei8/agent-bridge
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ARM64 官方资产名沿用 agent-bridge，避免既有部署机的更新逻辑失效。
+          - asset: agent-bridge
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+          - asset: agent-bridge-linux-amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SRC_REPO_TOKEN }}
+          path: src
+          fetch-depth: 1
+
+      # 在 Ubuntu 20.04 + Python 3.8 里构建，保持 glibc 2.31 基线，
+      # 与既有部署机（Ubuntu 20.04 ARM64）兼容。
+      - name: Build in Ubuntu 20.04 container
+        run: |
+          set -euo pipefail
+          docker pull --platform ${{ matrix.platform }} ubuntu:20.04
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/src:/src" -w /src ubuntu:20.04 bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq python3.8 python3.8-venv python3.8-dev python3-pip file ca-certificates
+              python3.8 -m venv /venv
+              /venv/bin/pip install --upgrade pip
+              /venv/bin/pip install -r /src/requirements.txt
+              /venv/bin/pip install pyinstaller
+              /venv/bin/pyinstaller /src/agent-bridge.spec --clean
+              cp /src/dist/agent-bridge /src/${{ matrix.asset }}
+              chmod +x /src/${{ matrix.asset }}
+              cd /src
+              sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
+              file /src/${{ matrix.asset }}
+              cat /src/${{ matrix.asset }}.sha256
+            '
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            src/${{ matrix.asset }}
+            src/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source for release notes
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SRC_REPO_TOKEN }}
+          path: src
+          fetch-depth: 1
+          sparse-checkout: docs
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+          cd assets
+          for f in *.sha256; do sha256sum -c "$f"; done
+          ls -l
+
+      - name: Compose release notes
+        env:
+          TAG: ${{ inputs.tag }}
+          EXTRA: ${{ inputs.notes_extra }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          NOTE_FILE="src/docs/RELEASE_V${VER}.md"
+          {
+            echo "AgentBridge ${TAG} Linux 预编译二进制：ARM64 与 AMD64，Ubuntu 20.04 / Python 3.8 / glibc 2.31 基线构建。"
+            echo
+            if [ -f "$NOTE_FILE" ]; then
+              cat "$NOTE_FILE"
+            else
+              echo "源码仓库未提供 ${NOTE_FILE}，本次只发布资产。"
+            fi
+            if [ -n "${EXTRA:-}" ]; then
+              echo
+              echo "$EXTRA"
+            fi
+            echo
+            echo "## 资产"
+            echo
+            echo "| 文件 | 说明 |"
+            echo "| --- | --- |"
+            echo "| \`agent-bridge\` | linux-arm64 / aarch64 |"
+            echo "| \`agent-bridge.sha256\` | 上一行的 SHA-256 |"
+            echo "| \`agent-bridge-linux-amd64\` | linux-x86_64 / amd64 |"
+            echo "| \`agent-bridge-linux-amd64.sha256\` | 上一行的 SHA-256 |"
+            echo
+            echo "安装与升级请使用本仓库的 \`manage.sh\`。"
+          } > body.md
+          cat body.md
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file body.md "${FLAGS[@]}"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "AgentBridge $TAG" --target main --notes-file body.md "${FLAGS[@]}"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber assets/*
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
