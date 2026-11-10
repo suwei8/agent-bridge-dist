@@ -361,6 +361,9 @@ get_local_release_tag() {
     fi
 }
 
+# 最近一次下载到的 release tag；由 deploy 在二进制替换成功后写盘。
+DOWNLOADED_RELEASE_TAG=""
+
 download_latest_binary() {
     local tmp_file="$1"
     local latest_tag=""
@@ -381,7 +384,11 @@ download_latest_binary() {
     info "已下载发布资产: $APP_NAME (tag: $latest_tag)"
 
     verify_download_checksum "$APP_NAME" "$tmp_file" || return 1
-    printf '%s\n' "$latest_tag" > "$RELEASE_TAG_FILE"
+
+    # 只暂存，不落盘：版本标记必须等二进制真正替换成功后再写（见 deploy），
+    # 否则中途被打断（ssh 超时、curl 被杀）会留下「标记是新的、二进制还是旧的」，
+    # 下次更新又因版本相同而跳过，永远修不好。
+    DOWNLOADED_RELEASE_TAG="$latest_tag"
     return 0
 }
 
@@ -647,8 +654,17 @@ deploy() {
         info "正在停止旧版本进程..."
         stop
         cleanup_legacy_artifacts
-        mv -f "$tmp_file" "$APP_PATH"
+        if ! mv -f "$tmp_file" "$APP_PATH"; then
+            error "替换二进制失败: $APP_PATH"
+            rm -f "$tmp_file"
+            return 1
+        fi
         info "二进制部署成功: $APP_PATH"
+
+        if [ -n "${DOWNLOADED_RELEASE_TAG:-}" ]; then
+            printf '%s\n' "$DOWNLOADED_RELEASE_TAG" > "$RELEASE_TAG_FILE"
+            info "版本标记已更新: $DOWNLOADED_RELEASE_TAG"
+        fi
 
         if ensure_env_file; then
             setup_env
