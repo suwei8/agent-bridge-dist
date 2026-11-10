@@ -64,12 +64,15 @@ jobs:
             -v "$PWD/src:/src" -w /src ubuntu:20.04 bash -c '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y -qq python3.8 python3.8-venv python3.8-dev python3-pip file ca-certificates
+              # archive.ubuntu.com 对 runner 出口不稳（2026-11-10 连续 "Connection failed"），
+              # 换成 Azure 镜像 + 重试；ARM64 仍走 ports.ubuntu.com。
+              sed -i -E "s|https?://(archive|security)\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g" /etc/apt/sources.list
+              apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update -qq
+              apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y -qq python3.8 python3.8-venv python3.8-dev python3-pip file ca-certificates
               python3.8 -m venv /venv
-              /venv/bin/pip install --upgrade pip
-              /venv/bin/pip install -r /src/requirements.txt
-              /venv/bin/pip install pyinstaller
+              /venv/bin/pip install --retries 6 --timeout 60 --upgrade pip
+              /venv/bin/pip install --retries 6 --timeout 60 -r /src/requirements.txt
+              /venv/bin/pip install --retries 6 --timeout 60 pyinstaller
               /venv/bin/pyinstaller /src/agent-bridge.spec --clean
               cp /src/dist/agent-bridge /src/${{ matrix.asset }}
               chmod +x /src/${{ matrix.asset }}
